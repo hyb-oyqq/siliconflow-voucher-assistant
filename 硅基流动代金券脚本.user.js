@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         硅基流动代金券助手
 // @namespace    https://cloud.siliconflow.cn/
-// @version      1.0.1
+// @version      1.0.2
 // @description  在硅基流动平台显示代金券总额，并在模型页面标识支持代金券的模型
 // @author       ouyangqiqi     by https://github.com/hyb-oyqq
 // @match        https://cloud.siliconflow.cn/*
@@ -1086,12 +1086,12 @@
             }
 
             try {
-                // 直接匹配
+                // 直接精确匹配
                 if (supportedModelMap.has(modelName)) {
                     return true;
                 }
 
-                // 尝试不区分大小写匹配
+                // 尝试不区分大小写的精确匹配
                 const lowerName = modelName.toLowerCase();
                 for (const [key] of supportedModelMap) {
                     if (key.toLowerCase() === lowerName) {
@@ -1099,12 +1099,8 @@
                     }
                 }
 
-                // 尝试部分匹配（模型名称可能包含版本号等后缀）
-                for (const [key] of supportedModelMap) {
-                    if (modelName.includes(key) || key.includes(modelName)) {
-                        return true;
-                    }
-                }
+                // 不再使用模糊匹配，避免误判
+                // 例如 "Pro/deepseek-ai/DeepSeek-V3.2" 不应匹配 "DeepSeek-V3"
 
                 return false;
             } catch (error) {
