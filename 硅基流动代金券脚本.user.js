@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         硅基流动代金券助手
 // @namespace    https://cloud.siliconflow.cn/
-// @version      1.0.0
+// @version      1.0.1
 // @description  在硅基流动平台显示代金券总额，并在模型页面标识支持代金券的模型
 // @author       ouyangqiqi     by https://github.com/hyb-oyqq
 // @match        https://cloud.siliconflow.cn/*
@@ -896,8 +896,8 @@
                         this.markSupportedModels(this.supportedModelMap);
                     }
                 } else {
-                    // 关闭标记，移除所有徽章
-                    this.cleanup();
+                    // 关闭标记，仅移除徽章（保留开关按钮）
+                    this.removeBadges();
                 }
                 
                 console.log(`[代金券助手] 模型标记已${this.enabled ? '开启' : '关闭'}`);
@@ -1160,13 +1160,24 @@
         },
 
         /**
+         * 仅移除所有徽章（不移除开关按钮）
+         */
+        removeBadges() {
+            try {
+                const badges = document.querySelectorAll('.voucher-support-badge');
+                badges.forEach(badge => badge.remove());
+            } catch (error) {
+                console.warn('[代金券助手] 移除徽章失败:', error.message);
+            }
+        },
+
+        /**
          * 清理所有徽章和开关按钮
          */
         cleanup() {
             try {
                 // 移除所有徽章
-                const badges = document.querySelectorAll('.voucher-support-badge');
-                badges.forEach(badge => badge.remove());
+                this.removeBadges();
                 
                 // 移除开关按钮
                 const toggle = document.getElementById(this.TOGGLE_ID);
