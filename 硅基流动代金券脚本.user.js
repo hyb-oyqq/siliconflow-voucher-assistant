@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         硅基流动代金券助手
 // @namespace    https://cloud.siliconflow.cn/
-// @version      1.0.3
+// @version      1.0.4
 // @description  在硅基流动平台显示代金券总额，并在模型页面标识支持代金券的模型
 // @author       ouyangqiqi     by https://github.com/hyb-oyqq
 // @match        https://cloud.siliconflow.cn/*
@@ -1099,23 +1099,6 @@
                     }
                 }
 
-                // 处理带 Pro/ 前缀的模型名称
-                // 页面显示可能是 "Pro/deepseek-ai/DeepSeek-V3" 而 API 返回的是 "deepseek-ai/DeepSeek-V3"
-                // 只有去掉前缀后完全匹配才算支持
-                if (modelName.startsWith('Pro/')) {
-                    const nameWithoutPrefix = modelName.substring(4); // 去掉 "Pro/"
-                    if (supportedModelMap.has(nameWithoutPrefix)) {
-                        return true;
-                    }
-                    // 不区分大小写的精确匹配
-                    const lowerNameWithoutPrefix = nameWithoutPrefix.toLowerCase();
-                    for (const [key] of supportedModelMap) {
-                        if (key.toLowerCase() === lowerNameWithoutPrefix) {
-                            return true;
-                        }
-                    }
-                }
-
                 return false;
             } catch (error) {
                 console.warn('[代金券助手] 检查模型支持状态时出错:', error.message);
@@ -1194,6 +1177,24 @@
                 if (toggle) {
                     toggle.remove();
                 }
+                
+                // 清理持续监听的 observer
+                if (this.modelListObserver) {
+                    this.modelListObserver.disconnect();
+                    this.modelListObserver = null;
+                }
+                
+                // 清理防抖定时器
+                if (this.markDebounceTimer) {
+                    clearTimeout(this.markDebounceTimer);
+                    this.markDebounceTimer = null;
+                }
+                
+                // 清理初始稳定性检测定时器
+                if (this.initialStabilityTimer) {
+                    clearTimeout(this.initialStabilityTimer);
+                    this.initialStabilityTimer = null;
+                }
             } catch (error) {
                 console.warn('[代金券助手] 清理徽章失败:', error.message);
             }
@@ -1206,6 +1207,9 @@
         markSupportedModels(supportedModelMap) {
             try {
                 this.injectStyles();
+                
+                // 先清除所有现有徽章，避免筛选/排序后徽章错乱
+                this.removeBadges();
                 
                 const cardsWithNames = this.getAllModelCardsWithNames();
                 let markedCount = 0;
@@ -1238,9 +1242,6 @@
             
             // 读取开关状态
             this.enabled = this.getEnabled();
-            
-            // 添加开关按钮
-            this.createToggleButton();
 
             try {
                 // 获取代金券包信息
@@ -1268,8 +1269,13 @@
 
                 // 如果开关开启，等待页面加载完成后标记模型
                 if (this.enabled) {
+                    // 等待标记完成后再显示开关按钮，确保同时出现
                     await this.waitAndMarkModels();
+                    this.createToggleButton();
                 } else {
+                    // 开关关闭时，等待模型列表出现后再显示开关
+                    await this.waitForModelCards();
+                    this.createToggleButton();
                     console.log('[代金券助手] 模型标记已关闭，跳过标记');
                 }
 
@@ -1277,6 +1283,39 @@
                 console.error('[代金券助手] 模型标记初始化失败:', error.message);
             }
         },
+        
+        /**
+         * 等待模型卡片出现（不标记）
+         */
+        async waitForModelCards() {
+            const maxWaitTime = 10000;
+            const startTime = Date.now();
+            
+            return new Promise((resolve) => {
+                const check = () => {
+                    const cards = this.getModelCards();
+                    if (cards.length > 0) {
+                        resolve(true);
+                        return;
+                    }
+                    if (Date.now() - startTime < maxWaitTime) {
+                        setTimeout(check, 300);
+                    } else {
+                        resolve(false);
+                    }
+                };
+                check();
+            });
+        },
+
+        // 持续监听的 MutationObserver 引用
+        modelListObserver: null,
+        
+        // 防抖定时器
+        markDebounceTimer: null,
+        
+        // 初始加载稳定检测定时器
+        initialStabilityTimer: null,
 
         /**
          * 等待模型卡片加载并标记
@@ -1285,6 +1324,11 @@
             // 等待模型网格出现
             const maxWaitTime = 10000;
             const startTime = Date.now();
+            
+            // 记录上次检测到的卡片数量，用于判断列表是否稳定
+            let lastCardCount = 0;
+            let stableCount = 0;
+            const requiredStableChecks = 3; // 需要连续3次检测到相同数量才认为稳定
 
             const checkAndMark = () => {
                 try {
@@ -1299,49 +1343,168 @@
                     return false;
                 }
             };
+            
+            // 等待列表稳定后再标记（处理页面初始加载后的二次更新）
+            const waitForStableAndMark = () => {
+                return new Promise((resolve) => {
+                    const checkStability = () => {
+                        const cards = this.getModelCards();
+                        const currentCount = cards.length;
+                        
+                        if (currentCount === lastCardCount && currentCount > 0) {
+                            stableCount++;
+                            if (stableCount >= requiredStableChecks) {
+                                // 列表已稳定，执行标记
+                                console.log(`[代金券助手] 模型列表已稳定 (${currentCount} 个模型)，开始标记`);
+                                this.markSupportedModels(this.supportedModelMap);
+                                resolve(true);
+                                return;
+                            }
+                        } else {
+                            stableCount = 0;
+                            lastCardCount = currentCount;
+                        }
+                        
+                        // 继续检测
+                        if (Date.now() - startTime < maxWaitTime) {
+                            this.initialStabilityTimer = setTimeout(checkStability, 300);
+                        } else {
+                            // 超时，直接标记
+                            console.log('[代金券助手] 等待稳定超时，直接标记');
+                            if (currentCount > 0) {
+                                this.markSupportedModels(this.supportedModelMap);
+                            }
+                            resolve(currentCount > 0);
+                        }
+                    };
+                    
+                    // 开始稳定性检测
+                    checkStability();
+                });
+            };
 
-            // 先尝试立即标记
-            if (checkAndMark()) {
-                return;
-            }
+            // 防抖标记函数，避免频繁触发（用于后续的动态更新）
+            const debouncedMark = () => {
+                if (this.markDebounceTimer) {
+                    clearTimeout(this.markDebounceTimer);
+                }
+                this.markDebounceTimer = setTimeout(() => {
+                    if (this.enabled && this.supportedModelMap) {
+                        this.markSupportedModels(this.supportedModelMap);
+                    }
+                }, 500); // 增加防抖时间到 500ms
+            };
 
-            // 使用 MutationObserver 监听 DOM 变化
-            return new Promise((resolve) => {
-                let observer;
-                try {
-                    observer = new MutationObserver(() => {
-                        try {
-                            if (checkAndMark()) {
+            // 等待页面有模型卡片出现
+            const waitForCards = () => {
+                return new Promise((resolve) => {
+                    const cards = this.getModelCards();
+                    if (cards.length > 0) {
+                        resolve(true);
+                        return;
+                    }
+                    
+                    // 使用 MutationObserver 等待模型卡片出现
+                    let observer;
+                    try {
+                        observer = new MutationObserver(() => {
+                            const cards = this.getModelCards();
+                            if (cards.length > 0) {
                                 observer.disconnect();
-                                resolve();
+                                resolve(true);
                             } else if (Date.now() - startTime > maxWaitTime) {
                                 observer.disconnect();
-                                console.warn('[代金券助手] 等待模型卡片超时');
-                                resolve();
+                                resolve(false);
                             }
-                        } catch (error) {
-                            console.warn('[代金券助手] MutationObserver 回调错误:', error.message);
-                        }
-                    });
+                        });
 
-                    observer.observe(document.body, {
-                        childList: true,
-                        subtree: true,
-                    });
+                        observer.observe(document.body, {
+                            childList: true,
+                            subtree: true,
+                        });
 
-                    // 超时保护
-                    setTimeout(() => {
-                        if (observer) {
-                            observer.disconnect();
+                        // 超时保护
+                        setTimeout(() => {
+                            if (observer) {
+                                observer.disconnect();
+                            }
+                            resolve(this.getModelCards().length > 0);
+                        }, maxWaitTime);
+                    } catch (error) {
+                        console.error('[代金券助手] 设置 MutationObserver 失败:', error.message);
+                        resolve(false);
+                    }
+                });
+            };
+
+            // 先等待页面有模型卡片
+            const hasCards = await waitForCards();
+            if (!hasCards) {
+                console.warn('[代金券助手] 等待模型卡片超时');
+                return;
+            }
+            
+            // 等待列表稳定后再标记（处理页面初始加载后的筛选/置顶更新）
+            await waitForStableAndMark();
+            
+            // 设置持续监听以处理后续的动态更新
+            this.setupContinuousObserver(debouncedMark);
+        },
+
+        /**
+         * 设置持续监听模型列表变化的 Observer
+         * 用于处理排序、筛选、置顶等操作导致的 DOM 更新
+         * @param {Function} callback - 变化时的回调函数
+         */
+        setupContinuousObserver(callback) {
+            // 先清理之前的 observer
+            if (this.modelListObserver) {
+                this.modelListObserver.disconnect();
+                this.modelListObserver = null;
+            }
+
+            try {
+                // 监听整个 body，因为筛选可能会替换整个网格容器
+                this.modelListObserver = new MutationObserver((mutations) => {
+                    // 简化检测逻辑：只要有子节点变化就触发重新标记
+                    // 使用防抖来避免频繁触发
+                    let hasRelevantChange = false;
+                    
+                    for (const mutation of mutations) {
+                        if (mutation.addedNodes.length > 0) {
+                            // 检查新增的节点中是否有模型卡片（或可能包含模型卡片的容器）
+                            for (const node of mutation.addedNodes) {
+                                if (node.nodeType === Node.ELEMENT_NODE) {
+                                    // 宽松检测：任何可能是模型卡片或容器的元素
+                                    hasRelevantChange = true;
+                                    break;
+                                }
+                            }
                         }
-                        checkAndMark();
-                        resolve();
-                    }, maxWaitTime);
-                } catch (error) {
-                    console.error('[代金券助手] 设置 MutationObserver 失败:', error.message);
-                    resolve();
-                }
-            });
+                        if (hasRelevantChange) break;
+                    }
+
+                    if (hasRelevantChange) {
+                        // 检查当前页面是否还有未标记的模型卡片
+                        const cards = this.getModelCards();
+                        const unmarkedCards = cards.filter(card => !card.querySelector('.voucher-support-badge'));
+                        
+                        if (unmarkedCards.length > 0 || cards.length === 0) {
+                            console.log('[代金券助手] 检测到模型列表变化，重新标记');
+                            callback();
+                        }
+                    }
+                });
+
+                this.modelListObserver.observe(document.body, {
+                    childList: true,
+                    subtree: true,
+                });
+
+                console.log('[代金券助手] 已设置模型列表持续监听');
+            } catch (error) {
+                console.warn('[代金券助手] 设置持续监听失败:', error.message);
+            }
         },
     };
 
